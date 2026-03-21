@@ -659,6 +659,278 @@ def collect_otodom_links(page, max_pages=3):
     return sorted(all_links)
 
 
+def collect_facebook_links(page, max_pages=3):
+    """Zbiera linki do ofert z Facebook Marketplace i grup przez wyszukiwarkę Google."""
+    all_links = set()
+
+    # Zapytania Google: Marketplace + popularne grupy
+    queries = [
+        'site:facebook.com/marketplace "wynajem" "Gdańsk" mieszkanie',
+        'site:facebook.com/marketplace "Gdańsk" "zł" mieszkanie',
+        'site:facebook.com/groups "wynajem" "Gdańsk" mieszkanie "zł"',
+        'site:facebook.com/groups "Gdańsk" mieszkanie do wynajęcia',
+    ]
+
+    for q_idx, query in enumerate(queries):
+        for page_num in range(max_pages):
+            start = page_num * 10
+            google_url = f"https://www.google.com/search?q={urllib.request.quote(query)}&start={start}"
+            print(f"  [Facebook/Google] Zapytanie {q_idx+1}/{len(queries)}, strona {page_num+1}...")
+
+            try:
+                page.goto(google_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+            time.sleep(3)
+
+            if q_idx == 0 and page_num == 0:
+                dismiss_cookies(page)
+
+            # Zbierz linki do Facebooka z wyników Google
+            anchors = page.locator("a[href*='facebook.com']").all()
+            page_links = set()
+            for a in anchors:
+                try:
+                    href = a.get_attribute("href")
+                    if not href:
+                        continue
+
+                    # Wyciagnij prawdziwy URL z Google redirect
+                    if "/url?q=" in href:
+                        m = re.search(r'/url\?q=(https?://[^&]+)', href)
+                        if m:
+                            href = urllib.request.unquote(m.group(1))
+
+                    # Filtruj — tylko oferty/posty, nie strony glowne
+                    if "facebook.com" in href and any(k in href for k in [
+                        "/marketplace/item/", "/groups/", "/permalink/",
+                        "/posts/", "/listing/",
+                    ]):
+                        # Wyczysc URL z trackerów
+                        href = re.sub(r'[?&](?:fbclid|ref|__cft__|__tn__)=[^&]*', '', href)
+                        href = href.rstrip('?&')
+                        page_links.add(href)
+                except Exception:
+                    continue
+
+            print(f"       -> {len(page_links)} linkow")
+
+            if not page_links:
+                break
+            all_links.update(page_links)
+
+            # Sprawdz czy Google ma nastepna strone
+            try:
+                next_g = page.locator("a#pnnext, a[aria-label='Next']").first
+                if not next_g.is_visible(timeout=2000):
+                    break
+            except Exception:
+                break
+
+    return sorted(all_links)
+
+
+def extract_facebook_data_from_google(page, url, listing_index):
+    """Wyciaga dane z oferty Facebook — najpierw probuje wejsc,
+    jesli wymaga logowania, parsuje dane z Google cache/snippet."""
+    data = {
+        "Platforma": "Facebook",
+        "URL": url,
+        "Nazwa": "Brak danych",
+        "Cena_Czynsz_Najmu": "Brak danych",
+        "Czynsz_Administracyjny": "Brak danych",
+        "Media": "Brak danych",
+        "Prad": "Brak danych",
+        "Gaz": "Brak danych",
+        "Woda": "Brak danych",
+        "Internet": "Brak danych",
+        "Smieci": "Brak danych",
+        "Parking": "Brak danych",
+        "Prowizja": "Brak danych",
+        "Cena_Suma": "Brak danych",
+        "Koszty_Rozpisane": "",
+        "Powierzchnia": "Brak danych",
+        "Kaucja": "Brak danych",
+        "Termin": "Brak danych",
+        "Min_Dlugosc_Najmu": "Brak danych",
+        "Potwierdzenie_Dochodu": "Brak danych",
+        "Zwierzeta": "Brak danych",
+        "Balkon": "Brak danych",
+        "Silownia": "Brak danych",
+        "Osiedle_Strzezone": "Brak danych",
+        "WiFi": "Brak danych",
+        "Ogrzewanie": "Brak danych",
+        "Ciepla_Woda": "Brak danych",
+        "Data_Wystawienia": "Brak danych",
+        "Uwagi": "",
+        "Zdjecia_URL": [],
+        "Zdjecie_Lokalne": "",
+    }
+
+    try:
+        # Sprobuj Google cache URL zeby ominac logowanie
+        cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
+        try:
+            page.goto(cache_url, wait_until="domcontentloaded", timeout=15000)
+            time.sleep(2)
+        except Exception:
+            # Jesli cache nie dziala, sprobuj bezposrednio
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                time.sleep(2)
+            except Exception:
+                pass
+
+        full_text = ""
+        try:
+            full_text = page.inner_text("body")
+        except Exception:
+            pass
+
+        # Jesli wymaga logowania — parsuj co sie da z Google snippet
+        if not full_text or "zaloguj" in full_text.lower() or "log in" in full_text.lower() or len(full_text) < 100:
+            # Wróc do Google i wyciagnij snippet
+            google_q = f'"{url}"'
+            google_search = f"https://www.google.com/search?q={urllib.request.quote(google_q)}"
+            try:
+                page.goto(google_search, wait_until="domcontentloaded", timeout=15000)
+                time.sleep(2)
+                full_text = page.inner_text("body")
+            except Exception:
+                pass
+
+        if not full_text:
+            data["Uwagi"] = "Wymaga logowania na Facebook"
+            return data
+
+        # ── Wyciagnij nazwe z URL lub tekstu ──
+        # Marketplace: /marketplace/item/1234567/tytul-oferty
+        m = re.search(r'/marketplace/item/\d+/([^/?]+)', url)
+        if m:
+            data["Nazwa"] = m.group(1).replace("-", " ").strip().title()
+
+        # Grupy: sprobuj z tekstu
+        if data["Nazwa"] == "Brak danych":
+            m = re.search(r'/groups/[^/]+/(?:posts|permalink)/\d+', url)
+            if m:
+                # Szukaj tytulu w tekscie
+                lines = full_text.split("\n")
+                for line in lines[:20]:
+                    line = line.strip()
+                    if len(line) > 15 and any(k in line.lower() for k in ["mieszkanie", "wynajem", "pokoje", "kawalerka", "gdańsk", "gdansk"]):
+                        data["Nazwa"] = line[:80]
+                        break
+
+        if data["Nazwa"] == "Brak danych":
+            # Fallback z URL
+            parts = url.rstrip("/").split("/")
+            for part in reversed(parts):
+                if len(part) > 5 and not part.isdigit():
+                    data["Nazwa"] = part.replace("-", " ").strip().title()
+                    break
+
+        # ── Cena ──
+        price_patterns = [
+            r"(\d[\d\s]*(?:,\d+)?)\s*(?:zł|zl|PLN)\s*/\s*(?:mies|mc|miesiąc)",
+            r"(\d[\d\s]*(?:,\d+)?)\s*(?:zł|zl|PLN)",
+        ]
+        for pat in price_patterns:
+            m = re.search(pat, full_text)
+            if m:
+                val = m.group(1).replace(" ", "")
+                try:
+                    v = float(val.replace(",", "."))
+                    if 500 <= v <= 15000:  # rozsadna cena najmu
+                        data["Cena_Czynsz_Najmu"] = f"{v:.0f} zl"
+                        break
+                except ValueError:
+                    pass
+
+        # ── Powierzchnia ──
+        area = extract_number(full_text, r"(\d{2,3}(?:[,\.]\d+)?)\s*m[²2]")
+        if not area:
+            area = extract_number(full_text, r"(?:powierzchnia|pow\.?|metraz)[:\s]*(\d[\d\s]*(?:[,\.]\d+)?)\s*m")
+        if area:
+            data["Powierzchnia"] = area + " m2"
+
+        # ── Koszty z opisu ──
+        from olx_scraper import extract_costs_from_text
+        costs = extract_costs_from_text(full_text)
+
+        if costs["czynsz_admin"]:
+            data["Czynsz_Administracyjny"] = f"{costs['czynsz_admin']:.0f} zl"
+        if costs["media"]:
+            data["Media"] = f"{costs['media']:.0f} zl"
+        if costs["kaucja"]:
+            data["Kaucja"] = f"{costs['kaucja']:.0f} zl"
+        elif costs.get("kaucja_opis"):
+            data["Kaucja"] = costs["kaucja_opis"]
+
+        # Slowa kluczowe
+        if find_keywords(full_text, KW_ANIMALS_YES):
+            data["Zwierzeta"] = "Tak"
+        elif find_keywords(full_text, KW_ANIMALS_NO):
+            data["Zwierzeta"] = "Nie"
+        if find_keywords(full_text, KW_BALCONY):
+            data["Balkon"] = "Tak"
+        if find_keywords(full_text, KW_GYM):
+            data["Silownia"] = "Tak"
+        if find_keywords(full_text, KW_GATED):
+            data["Osiedle_Strzezone"] = "Tak"
+        if find_keywords(full_text, KW_WIFI):
+            data["WiFi"] = "Tak"
+
+        heat = find_keywords(full_text, KW_HEATING)
+        if heat:
+            data["Ogrzewanie"] = heat.capitalize()
+
+        # ── Oblicz cene sumaryczna ──
+        rent = parse_price_value(data["Cena_Czynsz_Najmu"])
+        if rent is not None:
+            total = rent
+            breakdown = [f"najem: {rent:.0f}"]
+            for label, key in [("admin", "czynsz_admin"), ("media", "media")]:
+                val = costs.get(key)
+                if val:
+                    total += val
+                    breakdown.append(f"{label}: {val:.0f}")
+            if not costs.get("media"):
+                total += 250
+                breakdown.append("media ~250 (szacunek)")
+            data["Cena_Suma"] = f"{total:.0f} zl"
+            data["Koszty_Rozpisane"] = " + ".join(breakdown)
+            if total > BUDGET_LIMIT:
+                data["Uwagi"] = "POZA BUDZETEM"
+
+        if data["Powierzchnia"] != "Brak danych":
+            area_val = parse_price_value(data["Powierzchnia"])
+            if area_val and area_val < MIN_AREA:
+                data["Uwagi"] += ("; " if data["Uwagi"] else "") + f"MALE (<{MIN_AREA}m2)"
+
+        # Zdjecia z Facebooka (ograniczone bez logowania)
+        try:
+            imgs = page.locator("img[src*='fbcdn'], img[src*='facebook']").all()
+            for img in imgs[:5]:
+                src = img.get_attribute("src") or ""
+                if src and "fbcdn" in src and src not in data["Zdjecia_URL"]:
+                    data["Zdjecia_URL"].append(src)
+        except Exception:
+            pass
+
+        if data["Zdjecia_URL"]:
+            os.makedirs(IMAGES_DIR, exist_ok=True)
+            img_path = os.path.join(IMAGES_DIR, f"mieszkanie_{listing_index:03d}.jpg")
+            if download_image(data["Zdjecia_URL"][0], img_path):
+                data["Zdjecie_Lokalne"] = img_path
+
+        data["Uwagi"] += ("; " if data["Uwagi"] else "") + "Zrodlo: Facebook (via Google)"
+
+    except Exception as e:
+        data["Uwagi"] = f"BLAD: {e}"
+
+    return data
+
+
 # ── Zapis wynikow ─────────────────────────────────────────────────────────────
 
 def save_csv(results, filename):
@@ -935,11 +1207,26 @@ def main():
             all_results.append(data)
             print(f"  -> {data['Nazwa'][:45]} | {data['Cena_Suma']} | {data['Powierzchnia']}")
 
+        # ── Facebook (via Google) ──
+        print("\n" + "=" * 40)
+        print("  SKANOWANIE: Facebook (via Google)")
+        print("=" * 40)
+        fb_links = collect_facebook_links(page, max_pages=2)
+        print(f"\n  -> Facebook: {len(fb_links)} ofert")
+
+        for i, link in enumerate(fb_links, 1):
+            listing_counter += 1
+            print(f"\n[Facebook] [{i}/{len(fb_links)}] {link[:70]}...")
+            data = extract_facebook_data_from_google(page, link, listing_counter)
+            all_results.append(data)
+            print(f"  -> {data['Nazwa'][:45]} | {data['Cena_Suma']} | {data['Powierzchnia']}")
+
         # ── Zapis ──
         print(f"\n{'=' * 60}")
         print(f"  PODSUMOWANIE: {len(all_results)} ofert")
-        print(f"    OLX:    {len(olx_links)}")
-        print(f"    Otodom: {len(otodom_links)}")
+        print(f"    OLX:      {len(olx_links)}")
+        print(f"    Otodom:   {len(otodom_links)}")
+        print(f"    Facebook: {len(fb_links)}")
         print(f"{'=' * 60}")
 
         save_csv(all_results, OUTPUT_CSV)

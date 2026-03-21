@@ -17,7 +17,8 @@ from tkinter import filedialog
 # Import scrapera
 sys.path.insert(0, os.path.dirname(__file__))
 from olx_scraper import (
-    collect_olx_links, collect_otodom_links, extract_listing_data,
+    collect_olx_links, collect_otodom_links, collect_facebook_links,
+    extract_listing_data, extract_facebook_data_from_google,
     save_csv, save_xlsx, dismiss_cookies, parse_price_value,
     IMAGES_DIR,
 )
@@ -58,8 +59,10 @@ class App(ctk.CTk):
         self.var_wifi = ctk.BooleanVar(value=False)
         self.var_olx = ctk.BooleanVar(value=True)
         self.var_otodom = ctk.BooleanVar(value=True)
+        self.var_facebook = ctk.BooleanVar(value=True)
         self.var_olx_pages = ctk.IntVar(value=5)
         self.var_otodom_pages = ctk.IntVar(value=3)
+        self.var_fb_pages = ctk.IntVar(value=2)
         self.var_output_dir = ctk.StringVar(value=os.path.expanduser("~/Desktop"))
 
         self.results = []
@@ -95,7 +98,7 @@ class App(ctk.CTk):
 
         plat_grid = ctk.CTkFrame(plat_card, fg_color="transparent")
         plat_grid.pack(fill="x", padx=20, pady=16)
-        plat_grid.grid_columnconfigure((0, 1), weight=1)
+        plat_grid.grid_columnconfigure((0, 1, 2), weight=1)
 
         # OLX
         olx_frame = ctk.CTkFrame(plat_grid, corner_radius=10)
@@ -135,6 +138,30 @@ class App(ctk.CTk):
                           variable=self.var_otodom_pages, width=60,
                           fg_color=ACCENT, button_color=ACCENT_HOVER,
                           command=lambda v: self.var_otodom_pages.set(int(v))
+                          ).pack(side="left", padx=(8, 0))
+
+        # Facebook
+        fb_frame = ctk.CTkFrame(plat_grid, corner_radius=10)
+        fb_frame.grid(row=0, column=2, padx=(8, 0), sticky="nsew")
+        fb_inner = ctk.CTkFrame(fb_frame, fg_color="transparent")
+        fb_inner.pack(padx=16, pady=12)
+
+        ctk.CTkSwitch(fb_inner, text="Facebook", variable=self.var_facebook,
+                       font=ctk.CTkFont(size=14, weight="bold"),
+                       progress_color="#1877F2").pack(anchor="w")
+        fb_note = ctk.CTkLabel(fb_inner, text="via Google (bez logowania)",
+                               font=ctk.CTkFont(size=10),
+                               text_color=("gray50", "gray60"))
+        fb_note.pack(anchor="w", pady=(2, 0))
+        pages_row3 = ctk.CTkFrame(fb_inner, fg_color="transparent")
+        pages_row3.pack(anchor="w", pady=(6, 0))
+        ctk.CTkLabel(pages_row3, text="Stron Google:",
+                     font=ctk.CTkFont(size=12),
+                     text_color=("gray50", "gray70")).pack(side="left")
+        ctk.CTkOptionMenu(pages_row3, values=[str(i) for i in range(1, 6)],
+                          variable=self.var_fb_pages, width=60,
+                          fg_color="#1877F2", button_color="#1565C0",
+                          command=lambda v: self.var_fb_pages.set(int(v))
                           ).pack(side="left", padx=(8, 0))
 
         # ── Sekcja: Kryteria ──
@@ -302,11 +329,12 @@ class App(ctk.CTk):
         # ── Podsumowanie - karty ──
         summary_frame = ctk.CTkFrame(container, fg_color="transparent")
         summary_frame.pack(fill="x", pady=(0, 20))
-        summary_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+        summary_frame.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
 
         total = len(self.results)
         olx_c = sum(1 for r in self.results if r.get("Platforma") == "OLX")
         oto_c = sum(1 for r in self.results if r.get("Platforma") == "Otodom")
+        fb_c = sum(1 for r in self.results if r.get("Platforma") == "Facebook")
         budget_c = sum(1 for r in self.results if "POZA BUDZETEM" not in r.get("Uwagi", ""))
         pets_c = sum(1 for r in self.results if r.get("Zwierzeta") == "Tak")
 
@@ -314,6 +342,7 @@ class App(ctk.CTk):
             ("Wszystkie", str(total), ACCENT),
             ("OLX", str(olx_c), GREEN),
             ("Otodom", str(oto_c), "#2196F3"),
+            ("Facebook", str(fb_c), "#1877F2"),
             ("W budzecie", str(budget_c), GREEN),
             ("Ze zwierzetami", str(pets_c), YELLOW),
         ]
@@ -395,7 +424,7 @@ class App(ctk.CTk):
         # Nazwa + platforma
         name = r.get("Nazwa", "?")[:55]
         platform = r.get("Platforma", "?")
-        plat_color = GREEN if platform == "OLX" else "#2196F3"
+        plat_color = GREEN if platform == "OLX" else "#1877F2" if platform == "Facebook" else "#2196F3"
 
         name_frame = ctk.CTkFrame(inner, fg_color="transparent")
         name_frame.grid(row=0, column=1, sticky="w")
@@ -450,7 +479,7 @@ class App(ctk.CTk):
     #  LOGIKA SKANOWANIA
     # ══════════════════════════════════════════════════════════════════════════
     def start_scraping(self):
-        if not self.var_olx.get() and not self.var_otodom.get():
+        if not self.var_olx.get() and not self.var_otodom.get() and not self.var_facebook.get():
             dialog = ctk.CTkInputDialog(text="Wybierz przynajmniej jedna platforme!", title="Uwaga")
             return
 
@@ -501,22 +530,30 @@ class App(ctk.CTk):
                     self.log(f"Otodom: {len(otodom_links)} ofert")
                     all_links += [(link, "Otodom") for link in otodom_links]
 
-                total = len(all_links)
+                fb_links = []
+                if self.var_facebook.get():
+                    self.update_status("Szukam ofert z Facebooka (via Google)...")
+                    fb_links = collect_facebook_links(page, max_pages=self.var_fb_pages.get())
+                    self.log(f"Facebook: {len(fb_links)} ofert")
+
+                total = len(all_links) + len(fb_links)
                 self.log(f"\nLacznie: {total} ofert\n")
                 self.results = []
 
                 budget_ok = 0
                 budget_over = 0
                 pets_count = 0
+                counter = 0
 
+                # OLX + Otodom
                 for i, (link, platform) in enumerate(all_links, 1):
-                    self.update_status(f"[{platform}] {i}/{total}")
-                    self.update_progress(i, total)
+                    counter += 1
+                    self.update_status(f"[{platform}] {counter}/{total}")
+                    self.update_progress(counter, total)
 
-                    data = extract_listing_data(page, link, i, platform)
+                    data = extract_listing_data(page, link, counter, platform)
                     self.results.append(data)
 
-                    # Aktualizuj statystyki
                     if "POZA BUDZETEM" in data.get("Uwagi", ""):
                         budget_over += 1
                     else:
@@ -524,11 +561,33 @@ class App(ctk.CTk):
                     if data.get("Zwierzeta") == "Tak":
                         pets_count += 1
 
-                    self.update_live_stats(i, budget_ok, budget_over, pets_count)
+                    self.update_live_stats(counter, budget_ok, budget_over, pets_count)
 
                     name = data["Nazwa"][:35]
                     price = data["Cena_Suma"]
-                    self.log(f"[{i}/{total}] [{platform}] {name} | {price}")
+                    self.log(f"[{counter}/{total}] [{platform}] {name} | {price}")
+
+                # Facebook
+                for i, link in enumerate(fb_links, 1):
+                    counter += 1
+                    self.update_status(f"[Facebook] {counter}/{total}")
+                    self.update_progress(counter, total)
+
+                    data = extract_facebook_data_from_google(page, link, counter)
+                    self.results.append(data)
+
+                    if "POZA BUDZETEM" in data.get("Uwagi", ""):
+                        budget_over += 1
+                    else:
+                        budget_ok += 1
+                    if data.get("Zwierzeta") == "Tak":
+                        pets_count += 1
+
+                    self.update_live_stats(counter, budget_ok, budget_over, pets_count)
+
+                    name = data["Nazwa"][:35]
+                    price = data["Cena_Suma"]
+                    self.log(f"[{counter}/{total}] [Facebook] {name} | {price}")
 
                 self.log("\nZapisuje pliki...")
                 out_dir = self.var_output_dir.get()
