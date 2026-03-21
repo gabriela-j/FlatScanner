@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+chrome-olx-debug/
+mieszkania_zdjecia/
+mieszkania_gdansk.csv
+mieszkania_gdansk.xlsx
