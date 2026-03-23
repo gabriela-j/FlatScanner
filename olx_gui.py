@@ -98,71 +98,43 @@ class App(ctk.CTk):
 
         plat_grid = ctk.CTkFrame(plat_card, fg_color="transparent")
         plat_grid.pack(fill="x", padx=20, pady=16)
-        plat_grid.grid_columnconfigure((0, 1, 2), weight=1)
 
-        # OLX
-        olx_frame = ctk.CTkFrame(plat_grid, corner_radius=10)
-        olx_frame.grid(row=0, column=0, padx=(0, 8), sticky="nsew")
-        olx_inner = ctk.CTkFrame(olx_frame, fg_color="transparent")
-        olx_inner.pack(padx=16, pady=12)
+        # Platformy ulozone pionowo - kazda zajmuje pelna szerokosc
+        def make_platform_row(parent, label, variable, pages_var, pages_range,
+                              accent, accent_hover, note=None):
+            frame = ctk.CTkFrame(parent, corner_radius=10)
+            frame.pack(fill="x", pady=(0, 8))
+            inner = ctk.CTkFrame(frame, fg_color="transparent")
+            inner.pack(fill="x", padx=16, pady=12)
 
-        ctk.CTkSwitch(olx_inner, text="OLX.pl", variable=self.var_olx,
-                       font=ctk.CTkFont(size=14, weight="bold"),
-                       progress_color=ACCENT).pack(anchor="w")
-        pages_row = ctk.CTkFrame(olx_inner, fg_color="transparent")
-        pages_row.pack(anchor="w", pady=(8, 0))
-        ctk.CTkLabel(pages_row, text="Stron do przeszukania:",
-                     font=ctk.CTkFont(size=12),
-                     text_color=("gray50", "gray70")).pack(side="left")
-        ctk.CTkOptionMenu(pages_row, values=[str(i) for i in range(1, 11)],
-                          variable=self.var_olx_pages, width=60,
-                          fg_color=ACCENT, button_color=ACCENT_HOVER,
-                          command=lambda v: self.var_olx_pages.set(int(v))
-                          ).pack(side="left", padx=(8, 0))
+            left = ctk.CTkFrame(inner, fg_color="transparent")
+            left.pack(side="left")
+            ctk.CTkSwitch(left, text=label, variable=variable,
+                           font=ctk.CTkFont(size=14, weight="bold"),
+                           progress_color=accent).pack(anchor="w")
+            if note:
+                ctk.CTkLabel(left, text=note,
+                             font=ctk.CTkFont(size=10),
+                             text_color=("gray50", "gray60")).pack(anchor="w", pady=(2, 0))
 
-        # Otodom
-        oto_frame = ctk.CTkFrame(plat_grid, corner_radius=10)
-        oto_frame.grid(row=0, column=1, padx=(8, 0), sticky="nsew")
-        oto_inner = ctk.CTkFrame(oto_frame, fg_color="transparent")
-        oto_inner.pack(padx=16, pady=12)
+            right = ctk.CTkFrame(inner, fg_color="transparent")
+            right.pack(side="right")
+            ctk.CTkLabel(right, text="Stron:",
+                         font=ctk.CTkFont(size=12),
+                         text_color=("gray50", "gray70")).pack(side="left")
+            ctk.CTkOptionMenu(right, values=[str(i) for i in pages_range],
+                              variable=pages_var, width=60,
+                              fg_color=accent, button_color=accent_hover,
+                              command=lambda v: pages_var.set(int(v))
+                              ).pack(side="left", padx=(8, 0))
 
-        ctk.CTkSwitch(oto_inner, text="Otodom.pl", variable=self.var_otodom,
-                       font=ctk.CTkFont(size=14, weight="bold"),
-                       progress_color=ACCENT).pack(anchor="w")
-        pages_row2 = ctk.CTkFrame(oto_inner, fg_color="transparent")
-        pages_row2.pack(anchor="w", pady=(8, 0))
-        ctk.CTkLabel(pages_row2, text="Stron do przeszukania:",
-                     font=ctk.CTkFont(size=12),
-                     text_color=("gray50", "gray70")).pack(side="left")
-        ctk.CTkOptionMenu(pages_row2, values=[str(i) for i in range(1, 11)],
-                          variable=self.var_otodom_pages, width=60,
-                          fg_color=ACCENT, button_color=ACCENT_HOVER,
-                          command=lambda v: self.var_otodom_pages.set(int(v))
-                          ).pack(side="left", padx=(8, 0))
-
-        # Facebook
-        fb_frame = ctk.CTkFrame(plat_grid, corner_radius=10)
-        fb_frame.grid(row=0, column=2, padx=(8, 0), sticky="nsew")
-        fb_inner = ctk.CTkFrame(fb_frame, fg_color="transparent")
-        fb_inner.pack(padx=16, pady=12)
-
-        ctk.CTkSwitch(fb_inner, text="Facebook", variable=self.var_facebook,
-                       font=ctk.CTkFont(size=14, weight="bold"),
-                       progress_color="#1877F2").pack(anchor="w")
-        fb_note = ctk.CTkLabel(fb_inner, text="via Google (bez logowania)",
-                               font=ctk.CTkFont(size=10),
-                               text_color=("gray50", "gray60"))
-        fb_note.pack(anchor="w", pady=(2, 0))
-        pages_row3 = ctk.CTkFrame(fb_inner, fg_color="transparent")
-        pages_row3.pack(anchor="w", pady=(6, 0))
-        ctk.CTkLabel(pages_row3, text="Stron Google:",
-                     font=ctk.CTkFont(size=12),
-                     text_color=("gray50", "gray70")).pack(side="left")
-        ctk.CTkOptionMenu(pages_row3, values=[str(i) for i in range(1, 6)],
-                          variable=self.var_fb_pages, width=60,
-                          fg_color="#1877F2", button_color="#1565C0",
-                          command=lambda v: self.var_fb_pages.set(int(v))
-                          ).pack(side="left", padx=(8, 0))
+        make_platform_row(plat_grid, "OLX.pl", self.var_olx,
+                          self.var_olx_pages, range(1, 11), ACCENT, ACCENT_HOVER)
+        make_platform_row(plat_grid, "Otodom.pl", self.var_otodom,
+                          self.var_otodom_pages, range(1, 11), ACCENT, ACCENT_HOVER)
+        make_platform_row(plat_grid, "Facebook", self.var_facebook,
+                          self.var_fb_pages, range(1, 6), "#1877F2", "#1565C0",
+                          note="via Google (bez logowania)")
 
         # ── Sekcja: Kryteria ──
         self.card_label(container, "Kryteria wyszukiwania")
@@ -512,95 +484,101 @@ class App(ctk.CTk):
 
             with sync_playwright() as p:
                 browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
-                context = browser.contexts[0] if browser.contexts else browser.new_context()
-                page = context.pages[0] if context.pages else context.new_page()
-                time.sleep(2)
+                try:
+                    context = browser.contexts[0] if browser.contexts else browser.new_context()
+                    page = context.pages[0] if context.pages else context.new_page()
+                    time.sleep(2)
 
-                all_links = []
+                    all_links = []
 
-                if self.var_olx.get():
-                    self.update_status("Zbieram linki z OLX...")
-                    olx_links = collect_olx_links(page, max_pages=self.var_olx_pages.get())
-                    self.log(f"OLX: {len(olx_links)} ofert")
-                    all_links += [(link, "OLX") for link in olx_links]
+                    if self.var_olx.get():
+                        self.update_status("Zbieram linki z OLX...")
+                        olx_links = collect_olx_links(page, max_pages=self.var_olx_pages.get())
+                        self.log(f"OLX: {len(olx_links)} ofert")
+                        all_links += [(link, "OLX") for link in olx_links]
 
-                if self.var_otodom.get():
-                    self.update_status("Zbieram linki z Otodom...")
-                    otodom_links = collect_otodom_links(page, max_pages=self.var_otodom_pages.get())
-                    self.log(f"Otodom: {len(otodom_links)} ofert")
-                    all_links += [(link, "Otodom") for link in otodom_links]
+                    if self.var_otodom.get():
+                        self.update_status("Zbieram linki z Otodom...")
+                        otodom_links = collect_otodom_links(page, max_pages=self.var_otodom_pages.get())
+                        self.log(f"Otodom: {len(otodom_links)} ofert")
+                        all_links += [(link, "Otodom") for link in otodom_links]
 
-                fb_links = []
-                if self.var_facebook.get():
-                    self.update_status("Szukam ofert z Facebooka (via Google)...")
-                    fb_links = collect_facebook_links(page, max_pages=self.var_fb_pages.get())
-                    self.log(f"Facebook: {len(fb_links)} ofert")
+                    fb_links = []
+                    if self.var_facebook.get():
+                        self.update_status("Szukam ofert z Facebooka (via Google)...")
+                        fb_links = collect_facebook_links(page, max_pages=self.var_fb_pages.get())
+                        self.log(f"Facebook: {len(fb_links)} ofert")
 
-                total = len(all_links) + len(fb_links)
-                self.log(f"\nLacznie: {total} ofert\n")
-                self.results = []
+                    total = len(all_links) + len(fb_links)
+                    self.log(f"\nLacznie: {total} ofert\n")
+                    self.results = []
 
-                budget_ok = 0
-                budget_over = 0
-                pets_count = 0
-                counter = 0
+                    budget_ok = 0
+                    budget_over = 0
+                    pets_count = 0
+                    counter = 0
 
-                # OLX + Otodom
-                for i, (link, platform) in enumerate(all_links, 1):
-                    counter += 1
-                    self.update_status(f"[{platform}] {counter}/{total}")
-                    self.update_progress(counter, total)
+                    # OLX + Otodom
+                    for i, (link, platform) in enumerate(all_links, 1):
+                        counter += 1
+                        self.update_status(f"[{platform}] {counter}/{total}")
+                        self.update_progress(counter, total)
 
-                    data = extract_listing_data(page, link, counter, platform)
-                    self.results.append(data)
+                        data = extract_listing_data(page, link, counter, platform)
+                        self.results.append(data)
 
-                    if "POZA BUDZETEM" in data.get("Uwagi", ""):
-                        budget_over += 1
-                    else:
-                        budget_ok += 1
-                    if data.get("Zwierzeta") == "Tak":
-                        pets_count += 1
+                        if "POZA BUDZETEM" in data.get("Uwagi", ""):
+                            budget_over += 1
+                        else:
+                            budget_ok += 1
+                        if data.get("Zwierzeta") == "Tak":
+                            pets_count += 1
 
-                    self.update_live_stats(counter, budget_ok, budget_over, pets_count)
+                        self.update_live_stats(counter, budget_ok, budget_over, pets_count)
 
-                    name = data["Nazwa"][:35]
-                    price = data["Cena_Suma"]
-                    self.log(f"[{counter}/{total}] [{platform}] {name} | {price}")
+                        name = data["Nazwa"][:35]
+                        price = data["Cena_Suma"]
+                        self.log(f"[{counter}/{total}] [{platform}] {name} | {price}")
 
-                # Facebook
-                for i, link in enumerate(fb_links, 1):
-                    counter += 1
-                    self.update_status(f"[Facebook] {counter}/{total}")
-                    self.update_progress(counter, total)
+                    # Facebook
+                    for i, link in enumerate(fb_links, 1):
+                        counter += 1
+                        self.update_status(f"[Facebook] {counter}/{total}")
+                        self.update_progress(counter, total)
 
-                    data = extract_facebook_data_from_google(page, link, counter)
-                    self.results.append(data)
+                        data = extract_facebook_data_from_google(page, link, counter)
+                        self.results.append(data)
 
-                    if "POZA BUDZETEM" in data.get("Uwagi", ""):
-                        budget_over += 1
-                    else:
-                        budget_ok += 1
-                    if data.get("Zwierzeta") == "Tak":
-                        pets_count += 1
+                        if "POZA BUDZETEM" in data.get("Uwagi", ""):
+                            budget_over += 1
+                        else:
+                            budget_ok += 1
+                        if data.get("Zwierzeta") == "Tak":
+                            pets_count += 1
 
-                    self.update_live_stats(counter, budget_ok, budget_over, pets_count)
+                        self.update_live_stats(counter, budget_ok, budget_over, pets_count)
 
-                    name = data["Nazwa"][:35]
-                    price = data["Cena_Suma"]
-                    self.log(f"[{counter}/{total}] [Facebook] {name} | {price}")
+                        name = data["Nazwa"][:35]
+                        price = data["Cena_Suma"]
+                        self.log(f"[{counter}/{total}] [Facebook] {name} | {price}")
 
-                self.log("\nZapisuje pliki...")
-                out_dir = self.var_output_dir.get()
-                self.csv_path = os.path.join(out_dir, "mieszkania_gdansk.csv")
-                self.xlsx_path = os.path.join(out_dir, "mieszkania_gdansk.xlsx")
+                    self.log("\nZapisuje pliki...")
+                    out_dir = self.var_output_dir.get()
+                    self.csv_path = os.path.join(out_dir, "mieszkania_gdansk.csv")
+                    self.xlsx_path = os.path.join(out_dir, "mieszkania_gdansk.xlsx")
 
-                save_csv(self.results, self.csv_path)
-                save_xlsx(self.results, self.xlsx_path)
+                    save_csv(self.results, self.csv_path)
+                    save_xlsx(self.results, self.xlsx_path)
 
-                self.log(f"\nGotowe! {len(self.results)} ofert.")
-                self.update_status("Zakonczone!")
+                    self.log(f"\nGotowe! {len(self.results)} ofert.")
+                    self.update_status("Zakonczone!")
 
-                self.after(2000, self.show_results_panel)
+                    self.after(2000, self.show_results_panel)
+                finally:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
 
         except Exception as e:
             self.log(f"\n[BLAD] {e}")

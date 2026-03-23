@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
@@ -57,6 +57,21 @@ KW_INCOME_PROOF = [
     "potwierdzenie dochodu", "zaświadczenie o zarobkach", "weryfikacja dochodu",
     "potwierdzenie zarobków", "udokumentowane dochody", "umowa o pracę wymagana",
 ]
+KW_FURNISHED_YES = [
+    "w pełni umeblowane", "umeblowane", "meble w cenie", "kompletnie umeblowane",
+    "w pełni wyposażone", "wyposażone", "fully furnished", "furnished",
+    "umeblowany", "umeblowana", "wszystkie meble",
+]
+KW_FURNISHED_NO = [
+    "nieumeblowane", "bez mebli", "do umeblowania", "pusty lokal",
+    "bez umeblowania", "unfurnished",
+]
+KW_OCCASIONAL_LEASE = [
+    "najem okazjonalny", "umowa okazjonalna", "okazjonalna",
+]
+KW_STANDARD_LEASE = [
+    "umowa najmu", "najem instytucjonalny", "umowa na czas",
+]
 
 
 def find_keywords(text, keywords):
@@ -65,6 +80,87 @@ def find_keywords(text, keywords):
         if kw.lower() in t:
             return kw
     return None
+
+
+def extract_features_from_text(full_text, data):
+    """Wyciaga cechy mieszkania ze slów kluczowych i regex. Modyfikuje dict data in-place."""
+    # Slowa kluczowe
+    if find_keywords(full_text, KW_ANIMALS_YES):
+        data["Zwierzeta"] = "Tak"
+    elif find_keywords(full_text, KW_ANIMALS_NO):
+        data["Zwierzeta"] = "Nie"
+
+    if find_keywords(full_text, KW_BALCONY):
+        data["Balkon"] = "Tak"
+    if find_keywords(full_text, KW_GYM):
+        data["Silownia"] = "Tak"
+    if find_keywords(full_text, KW_GATED):
+        data["Osiedle_Strzezone"] = "Tak"
+    if find_keywords(full_text, KW_WIFI):
+        data["WiFi"] = "Tak"
+
+    heat = find_keywords(full_text, KW_HEATING)
+    if heat:
+        data["Ogrzewanie"] = heat.capitalize()
+    hw = find_keywords(full_text, KW_HOT_WATER)
+    if hw:
+        data["Ciepla_Woda"] = hw.capitalize()
+    if find_keywords(full_text, KW_INCOME_PROOF):
+        data["Potwierdzenie_Dochodu"] = "Tak"
+
+    # Umeblowanie
+    if find_keywords(full_text, KW_FURNISHED_YES):
+        data["Umeblowane"] = "Tak"
+    elif find_keywords(full_text, KW_FURNISHED_NO):
+        data["Umeblowane"] = "Nie"
+
+    # Rodzaj umowy
+    if find_keywords(full_text, KW_OCCASIONAL_LEASE):
+        data["Rodzaj_Umowy"] = "Najem okazjonalny"
+    elif find_keywords(full_text, KW_STANDARD_LEASE):
+        data["Rodzaj_Umowy"] = "Najem zwykly"
+
+    # Liczba pokoi
+    rooms_patterns = [
+        (r"(?:liczba\s*pokoi|pokoje|pokoi|rooms?)[:\s]*(\d)", None),
+        (r"(\d)\s*[-–]\s*(?:pokojowe|pokojowy|pokojowa|pok\.?)", None),
+        (r"\b(\d)\s*(?:pokoje|pokoi|pokój|pok\.)\b", None),
+        (r"\bkawalerka\b", "1"),
+        (r"\bstudio\b", "1"),
+    ]
+    for pat, fixed_val in rooms_patterns:
+        m = re.search(pat, full_text, re.IGNORECASE)
+        if m:
+            data["Liczba_Pokoi"] = fixed_val or m.group(1)
+            break
+
+    # Pietro
+    floor_patterns = [
+        r"(?:piętro|pietro|floor)[:\s]*(\d{1,2})\s*/\s*(\d{1,2})",
+        r"(?:piętro|pietro|floor)[:\s]*(\d{1,2})",
+        r"(\d{1,2})\s*(?:piętro|pietro|piętrze|pietrze)",
+        r"\bparter\b",
+    ]
+    for pat in floor_patterns:
+        m = re.search(pat, full_text, re.IGNORECASE)
+        if m:
+            if "parter" in pat:
+                data["Pietro"] = "Parter"
+            elif m.lastindex and m.lastindex >= 2:
+                data["Pietro"] = f"{m.group(1)}/{m.group(2)}"
+            else:
+                data["Pietro"] = m.group(1)
+            break
+
+    # Rok budowy
+    year_m = re.search(
+        r"(?:rok\s*budowy|wybudowan[oay]|built)[:\s]*(\d{4})",
+        full_text, re.IGNORECASE,
+    )
+    if year_m:
+        y = int(year_m.group(1))
+        if 1900 <= y <= 2027:
+            data["Rok_Budowy"] = str(y)
 
 
 def extract_number(text, pattern):
@@ -362,6 +458,11 @@ def extract_listing_data(page, url, listing_index, platform="OLX"):
         "WiFi": "Brak danych",
         "Ogrzewanie": "Brak danych",
         "Ciepla_Woda": "Brak danych",
+        "Liczba_Pokoi": "Brak danych",
+        "Pietro": "Brak danych",
+        "Umeblowane": "Brak danych",
+        "Rok_Budowy": "Brak danych",
+        "Rodzaj_Umowy": "Brak danych",
         "Data_Wystawienia": "Brak danych",
         "Uwagi": "",
         "Zdjecia_URL": [],
@@ -453,6 +554,73 @@ def extract_listing_data(page, url, listing_index, platform="OLX"):
                 data["Powierzchnia"] = area + " m2"
                 break
 
+        # ── Parametry strukturalne (tabele OLX/Otodom) ──
+        try:
+            params_text = ""
+            # OLX: parametry w sekcji data-testid lub li elementach
+            param_selectors = [
+                "li[data-testid]", "[class*='param']", "[class*='detail'] li",
+                "div[class*='Parameter']", "[data-cy='ad_params'] li",
+                "table td", "div[class*='info'] p",
+            ]
+            for sel in param_selectors:
+                try:
+                    els = page.locator(sel).all()
+                    if els:
+                        params_text = "\n".join(el.inner_text() for el in els[:30])
+                        break
+                except Exception:
+                    continue
+
+            combined = params_text + "\n" + full_text if params_text else full_text
+
+            # Liczba pokoi z parametrow
+            if data.get("Liczba_Pokoi", "Brak danych") == "Brak danych":
+                rm = re.search(r"(?:liczba\s*pokoi|pokoje|rooms?)\s*[:\n]\s*(\d)", combined, re.IGNORECASE)
+                if rm:
+                    data["Liczba_Pokoi"] = rm.group(1)
+
+            # Pietro z parametrow
+            if data.get("Pietro", "Brak danych") == "Brak danych":
+                fm = re.search(r"(?:piętro|pietro|floor)\s*[:\n]\s*(\d{1,2})\s*/\s*(\d{1,2})", combined, re.IGNORECASE)
+                if fm:
+                    data["Pietro"] = f"{fm.group(1)}/{fm.group(2)}"
+                else:
+                    fm = re.search(r"(?:piętro|pietro|floor)\s*[:\n]\s*(\d{1,2}|parter)", combined, re.IGNORECASE)
+                    if fm:
+                        val = fm.group(1)
+                        data["Pietro"] = "Parter" if val.lower() == "parter" else val
+
+            # Umeblowanie z parametrow
+            if data.get("Umeblowane", "Brak danych") == "Brak danych":
+                um = re.search(r"(?:umeblowanie|umeblowane|furnished)\s*[:\n]\s*(tak|nie|yes|no|częściowo|partial)", combined, re.IGNORECASE)
+                if um:
+                    val = um.group(1).lower()
+                    data["Umeblowane"] = "Tak" if val in ("tak", "yes") else "Nie" if val in ("nie", "no") else "Czesciowo"
+
+            # Rok budowy z parametrow
+            if data.get("Rok_Budowy", "Brak danych") == "Brak danych":
+                ym = re.search(r"(?:rok\s*budowy|built|year)\s*[:\n]\s*(\d{4})", combined, re.IGNORECASE)
+                if ym:
+                    y = int(ym.group(1))
+                    if 1900 <= y <= 2027:
+                        data["Rok_Budowy"] = str(y)
+
+            # Rodzaj umowy z parametrow
+            if data.get("Rodzaj_Umowy", "Brak danych") == "Brak danych":
+                tm = re.search(r"(?:typ\s*umowy|rodzaj\s*umowy|typ\s*najmu)\s*[:\n]\s*([^\n]{3,30})", combined, re.IGNORECASE)
+                if tm:
+                    val = tm.group(1).strip().lower()
+                    if "okazjonaln" in val:
+                        data["Rodzaj_Umowy"] = "Najem okazjonalny"
+                    elif "instytucjonaln" in val:
+                        data["Rodzaj_Umowy"] = "Najem instytucjonalny"
+                    else:
+                        data["Rodzaj_Umowy"] = tm.group(1).strip().title()
+
+        except Exception:
+            pass
+
         # ── Dokladna analiza kosztow ──
         costs = extract_costs_from_text(full_text)
 
@@ -498,29 +666,8 @@ def extract_listing_data(page, url, listing_index, platform="OLX"):
         if min_rent:
             data["Min_Dlugosc_Najmu"] = f"{min_rent.group(1)} {min_rent.group(2)}"
 
-        # ── Slowa kluczowe ──
-        if find_keywords(full_text, KW_ANIMALS_YES):
-            data["Zwierzeta"] = "Tak"
-        elif find_keywords(full_text, KW_ANIMALS_NO):
-            data["Zwierzeta"] = "Nie"
-
-        if find_keywords(full_text, KW_BALCONY):
-            data["Balkon"] = "Tak"
-        if find_keywords(full_text, KW_GYM):
-            data["Silownia"] = "Tak"
-        if find_keywords(full_text, KW_GATED):
-            data["Osiedle_Strzezone"] = "Tak"
-        if find_keywords(full_text, KW_WIFI):
-            data["WiFi"] = "Tak"
-
-        heat = find_keywords(full_text, KW_HEATING)
-        if heat:
-            data["Ogrzewanie"] = heat.capitalize()
-        hw = find_keywords(full_text, KW_HOT_WATER)
-        if hw:
-            data["Ciepla_Woda"] = hw.capitalize()
-        if find_keywords(full_text, KW_INCOME_PROOF):
-            data["Potwierdzenie_Dochodu"] = "Tak"
+        # ── Cechy mieszkania (slowa kluczowe + regex) ──
+        extract_features_from_text(full_text, data)
 
         # ── Oblicz REALNA cene ──
         rent = parse_price_value(data["Cena_Czynsz_Najmu"])
@@ -761,6 +908,11 @@ def extract_facebook_data_from_google(page, url, listing_index):
         "WiFi": "Brak danych",
         "Ogrzewanie": "Brak danych",
         "Ciepla_Woda": "Brak danych",
+        "Liczba_Pokoi": "Brak danych",
+        "Pietro": "Brak danych",
+        "Umeblowane": "Brak danych",
+        "Rok_Budowy": "Brak danych",
+        "Rodzaj_Umowy": "Brak danych",
         "Data_Wystawienia": "Brak danych",
         "Uwagi": "",
         "Zdjecia_URL": [],
@@ -854,7 +1006,6 @@ def extract_facebook_data_from_google(page, url, listing_index):
             data["Powierzchnia"] = area + " m2"
 
         # ── Koszty z opisu ──
-        from olx_scraper import extract_costs_from_text
         costs = extract_costs_from_text(full_text)
 
         if costs["czynsz_admin"]:
@@ -866,23 +1017,8 @@ def extract_facebook_data_from_google(page, url, listing_index):
         elif costs.get("kaucja_opis"):
             data["Kaucja"] = costs["kaucja_opis"]
 
-        # Slowa kluczowe
-        if find_keywords(full_text, KW_ANIMALS_YES):
-            data["Zwierzeta"] = "Tak"
-        elif find_keywords(full_text, KW_ANIMALS_NO):
-            data["Zwierzeta"] = "Nie"
-        if find_keywords(full_text, KW_BALCONY):
-            data["Balkon"] = "Tak"
-        if find_keywords(full_text, KW_GYM):
-            data["Silownia"] = "Tak"
-        if find_keywords(full_text, KW_GATED):
-            data["Osiedle_Strzezone"] = "Tak"
-        if find_keywords(full_text, KW_WIFI):
-            data["WiFi"] = "Tak"
-
-        heat = find_keywords(full_text, KW_HEATING)
-        if heat:
-            data["Ogrzewanie"] = heat.capitalize()
+        # ── Cechy mieszkania (slowa kluczowe + regex) ──
+        extract_features_from_text(full_text, data)
 
         # ── Oblicz cene sumaryczna ──
         rent = parse_price_value(data["Cena_Czynsz_Najmu"])
@@ -941,7 +1077,9 @@ def save_csv(results, filename):
         "Cena_Suma", "Koszty_Rozpisane", "Powierzchnia", "Kaucja", "Termin",
         "Min_Dlugosc_Najmu", "Potwierdzenie_Dochodu", "Zwierzeta",
         "Balkon", "Silownia", "Osiedle_Strzezone", "WiFi",
-        "Ogrzewanie", "Ciepla_Woda", "Data_Wystawienia", "Uwagi",
+        "Ogrzewanie", "Ciepla_Woda",
+        "Liczba_Pokoi", "Pietro", "Umeblowane", "Rok_Budowy", "Rodzaj_Umowy",
+        "Data_Wystawienia", "Uwagi",
     ]
     rows = []
     for r in results:
@@ -982,7 +1120,9 @@ def save_xlsx(results, filename):
         "Cena_Suma", "Koszty_Rozpisane", "Powierzchnia", "Kaucja", "Termin",
         "Min_Dlugosc_Najmu", "Potwierdzenie_Dochodu", "Zwierzeta",
         "Balkon", "Silownia", "Osiedle_Strzezone", "WiFi",
-        "Ogrzewanie", "Ciepla_Woda", "Data_Wystawienia", "Uwagi",
+        "Ogrzewanie", "Ciepla_Woda",
+        "Liczba_Pokoi", "Pietro", "Umeblowane", "Rok_Budowy", "Rodzaj_Umowy",
+        "Data_Wystawienia", "Uwagi",
     ]
 
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
@@ -992,6 +1132,7 @@ def save_xlsx(results, filename):
     link_font = Font(color="0563C1", underline="single")
     olx_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
     otodom_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
+    fb_fill = PatternFill(start_color="E8F0FE", end_color="E8F0FE", fill_type="solid")
 
     for sheet_idx, (sheet_name, sheet_data) in enumerate(sheets_to_create):
         if sheet_idx == 0:
@@ -1013,7 +1154,8 @@ def save_xlsx(results, filename):
             ws.row_dimensions[row_idx].height = 90
 
             # Kolor tla wg platformy
-            platform_fill = olx_fill if item.get("Platforma") == "OLX" else otodom_fill
+            plat = item.get("Platforma", "")
+            platform_fill = olx_fill if plat == "OLX" else fb_fill if plat == "Facebook" else otodom_fill
 
             for col_idx, col_name in enumerate(columns, 1):
                 if col_name == "Zdjecie":
